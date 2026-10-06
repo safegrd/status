@@ -1,0 +1,33 @@
+name: watchdog
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check safegrd.dev
+        id: check
+        env:
+          WATCHDOG_TOKEN: ${{ secrets.WATCHDOG_TOKEN }}
+        run: ./check.sh
+      - name: Post a change to Discord
+        if: always()
+        env:
+          OUTCOME: ${{ steps.check.outcome }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+        run: ./notify.sh

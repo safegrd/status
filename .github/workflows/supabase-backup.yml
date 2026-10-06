@@ -1,0 +1,50 @@
+name: supabase-backup
+
+# A canary: SafeGrd backs up a known Supabase database from this runner every
+# 6 hours and drills it daily, the way a customer's workflow does. A backup
+# that stops landing shows up as a late canary on the SafeGrd side.
+
+on:
+  schedule:
+    - cron: "23 */6 * * *" # backup
+    - cron: "53 5 * * *"   # drill
+  workflow_dispatch:
+    inputs:
+      drill:
+        description: Drill instead of back up
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-backup
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CONFIGURED: ${{ secrets.SAFEGRD_CONFIG != '' && secrets.SUPABASE_DATABASE_URL != '' }}
+      DRILL: ${{ github.event.schedule == '53 5 * * *' || inputs.drill == true }}
+    steps:
+      - name: Not set up yet
+        if: env.CONFIGURED != 'true'
+        run: echo "SAFEGRD_CONFIG and SUPABASE_DATABASE_URL are not set; nothing to back up."
+      - name: Back up
+        if: env.CONFIGURED == 'true' && env.DRILL != 'true'
+        uses: safegrd/backup-action@v0
+        with:
+          config: ${{ secrets.SAFEGRD_CONFIG }}
+          database-url: ${{ secrets.SUPABASE_DATABASE_URL }}
+          postgres-version: "17"
+      - name: Back up and drill
+        if: env.CONFIGURED == 'true' && env.DRILL == 'true'
+        uses: safegrd/backup-action@v0
+        with:
+          config: ${{ secrets.SAFEGRD_CONFIG }}
+          database-url: ${{ secrets.SUPABASE_DATABASE_URL }}
+          postgres-version: "17"
+          drill: true

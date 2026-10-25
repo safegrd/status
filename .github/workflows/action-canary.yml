@@ -1,0 +1,63 @@
+name: action-canary
+
+# A canary: safegrd/backup-action backs up a seeded PostgreSQL database from
+# this runner every day and drills it into a sandbox, once for a host whose
+# key SafeGrd holds and once for a host that holds its own key. A run that
+# stops landing shows up as a late canary on the SafeGrd side.
+
+on:
+  schedule:
+    - cron: "37 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-canary
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: ${{ matrix.key }} key
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        key: [SafeGrd-managed, customer-managed]
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 24
+    env:
+      DB: postgres://postgres:postgres@localhost:5432
+    steps:
+      - name: Seed a database
+        run: |
+          psql "$DB/postgres" -c "CREATE DATABASE app"
+          psql "$DB/app" -c "CREATE TABLE orders (id serial PRIMARY KEY, total bigint NOT NULL)" \
+            -c "INSERT INTO orders (total) SELECT g FROM generate_series(1, 250) g"
+
+      - name: Back up and drill into a sandbox
+        id: action
+        uses: safegrd/backup-action@v0
+        with:
+          config: ${{ matrix.key == 'SafeGrd-managed' && secrets.ACTION_CANARY_CONFIG_MANAGED || secrets.ACTION_CANARY_CONFIG_LOCAL }}
+          database-url: postgres://postgres:postgres@localhost:5432/app?sslmode=disable
+          drill: true
+          sandbox-url: postgres://postgres:postgres@localhost:5432/drill?sslmode=disable
+          private-key: ${{ matrix.key == 'customer-managed' && secrets.ACTION_CANARY_KEY_LOCAL || '' }}
+
+      - name: Check the sandbox holds the rows
+        env:
+          SNAPSHOT: ${{ steps.action.outputs.snapshot-id }}
+        run: |
+          test -n "$SNAPSHOT" || { echo "::error::The action set no snapshot-id."; exit 1; }
+          rows="$(psql "$DB/drill" -tAc "SELECT count(*) FROM orders")"
+          test "$rows" = "250" || { echo "::error::The sandbox holds $rows rows, not 250."; exit 1; }
